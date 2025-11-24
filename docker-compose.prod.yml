@@ -1,0 +1,303 @@
+networks:
+  myesi-net:
+    driver: bridge
+
+volumes:
+  pgdata:
+  redis-data:
+  kafka-data:
+  zookeeper-data:
+  zookeeper-logs:
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db:/docker-entrypoint-initdb.d
+    networks:
+      - myesi-net
+
+  #Backup for dev stage
+  postgres-backup:
+    image: postgres:latest
+    container_name: myesi-db-backup
+    depends_on:
+      - postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    entrypoint: ["/bin/bash", "-c"]
+    command: |
+      "while true; do
+        PGPASSWORD=$POSTGRES_PASSWORD pg_dump -U $POSTGRES_USER -h postgres -Fc $POSTGRES_DB \
+          > /backup/myesi_backup_$(date +%F_%H%M).dump;
+        find /backup -type f -mtime +7 -delete;
+        sleep 86400;
+      done"
+    volumes:
+      - pgbackup:/backup
+    networks:
+      - myesi-net
+
+  #Production stage (when S3 is available)
+  # postgres-backup:
+  #   image: schickling/postgres-backup-s3
+  #   container_name: myesi-db-backup
+  #   depends_on:
+  #     - postgres
+  #   environment:
+  #     # Postgres connection (lấy từ .env, giống service postgres)
+  #     POSTGRES_HOST: postgres
+  #     POSTGRES_DB: ${POSTGRES_DB}
+  #     POSTGRES_USER: ${POSTGRES_USER}
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+  #     # S3 credentials (KHÔNG hard-code, lấy từ .env hoặc secret manager)
+  #     S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
+  #     S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
+  #     S3_BUCKET: ${S3_BUCKET}
+  #     S3_REGION: ${S3_REGION}
+
+  #     # Optional: prefix + lịch
+  #     SCHEDULE: "@daily"           # hoặc "0 3 * * *" (3h sáng)
+  #     S3_PREFIX: "postgres-backup" # folder trong bucket
+  #   networks:
+  #     - myesi-net
+  #   restart: always
+
+  redis:
+    image: redis:7
+    volumes:
+      - redis-data:/data
+    networks:
+      - myesi-net
+
+  nginx:
+    image: nginx:alpine
+    container_name: myesi-nginx
+    depends_on:
+      - api-gateway
+      - myesi-frontend
+    volumes:
+      - ./config/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+      # TODO (prod): if enabling HTTPS with Let's Encrypt on the host, mount cert directory:
+      # - /etc/letsencrypt:/etc/letsencrypt:ro
+
+    ports:
+      - "80:80"
+      # TODO (prod): open port 443 when TLS is enabled:
+      # - "443:443"
+
+    networks:
+      - myesi-net
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.9.4
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-logs:/var/lib/zookeeper/log
+    networks:
+      - myesi-net
+    restart: on-failure
+
+  kafka:
+    image: confluentinc/cp-kafka:7.9.4
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - myesi-net
+    restart: on-failure
+
+  # === API GATEWAY ===
+  api-gateway:
+    image: dquang0504/myesi-api-gateway:latest
+    depends_on:
+      - user-service
+      - redis
+      - elasticsearch
+    environment:
+      USER_SERVICE_URL: http://user-service:8001
+      REDIS_URL: redis://redis:6379/0
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      ES_INDEX_PREFIX: myesi-audit
+    volumes:
+      - /var/myesi/api-logs:/app/logs
+    networks:
+      - myesi-net
+    ports:
+      - "8000:8000"
+
+  # === USER SERVICE ===
+  user-service:
+    image: dquang0504/myesi-user-service:latest
+    depends_on:
+      - postgres
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      SECRET_KEY: ${USER_SERVICE_SECRET_KEY}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
+      GITHUB_OAUTH_REDIRECT_URI: ${GITHUB_OAUTH_REDIRECT_URI}
+    networks:
+      - myesi-net
+    ports:
+      - "8001:8001"
+
+  # === SBOM SERVICE ===
+  sbom-service:
+    image: dquang0504/myesi-sbom-service-golang:latest
+    depends_on:
+      - postgres
+      - redis
+      - kafka
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      REDIS_URL: myesi-redis:6379
+      KAFKA_BROKER: kafka:9092
+      KAFKA_TOPIC: sbom-events
+    volumes:
+      - /var/myesi/sbom/tmp:/app/tmp
+    networks:
+      - myesi-net
+    ports:
+      - "8002:8002"
+
+  # === VULNERABILITY SERVICE ===
+  vulnerability-service:
+    image: dquang0504/myesi-vuln-service-golang:latest
+    depends_on:
+      - postgres
+      - kafka
+      - redis
+    environment:
+      REDIS_URL: myesi-redis:6379
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      KAFKA_BROKER: kafka:9092
+      KAFKA_TOPIC: sbom-events
+      CONSUMER_GROUP: myesi-vuln-group
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+      SEMGREP_APP_TOKEN: ${SEMGREP_APP_TOKEN}
+      # Scheduler config (OSV + repo cleanup)
+      SCHEDULER_SPEC: "@every 6h"
+      SCHEDULER_BATCH_LIMIT: 50
+      REPO_CLEANUP_SPEC: "@daily"
+      REPO_RETENTION_DAYS: 7
+    volumes:
+      - /var/myesi/repos:/app/tmp/repos     # cache repo code scan
+    networks:
+      - myesi-net
+    ports:
+      - "8003:8003"
+
+  # === RISK SERVICE ===
+  risk-service:
+    image: dquang0504/myesi-risk-service:latest
+    depends_on:
+      - postgres
+      - kafka
+      - g4f-service
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      SECRET_KEY: ${RISK_SERVICE_SECRET_KEY}
+      G4F_API_URL: http://g4f-service:8080/v1/chat/completions
+      G4F_API_KEY: ${G4F_API_KEY}
+    networks:
+      - myesi-net
+    ports:
+      - "8004:8004"
+
+  # === BILLING SERVICE ===
+  billing-service:
+    image: dquang0504/myesi-billing-service:latest
+    depends_on:
+      - postgres
+    env_file:
+      - ./myesi-billing-service/.env.prod   # tách env riêng cho billing
+    networks:
+      - myesi-net
+    ports:
+      - "8005:8005"
+
+  # === FRONTEND ===
+  myesi-frontend:
+    image: dquang0504/myesi-frontend:latest
+    depends_on:
+      - api-gateway
+    environment:
+      VITE_API_BASE_URL: http://api-gateway:8000   # frontend gọi qua gateway
+    networks:
+      - myesi-net
+    ports:
+      - "3000:80"
+
+  # === ELASTICSEARCH + KIBANA ===
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      xpack.security.http.ssl.enabled: "false"
+      bootstrap.memory_lock: "true"
+      ES_JAVA_OPTS: "-Xms1g -Xmx1g"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - ./elk-data/elasticsearch:/usr/share/elasticsearch/data
+    networks:
+      - myesi-net
+    ports:
+      - "9200:9200"
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.15.3
+    depends_on:
+      - elasticsearch
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+      XPACK_SECURITY_ENABLED: "false"
+    networks:
+      - myesi-net
+    ports:
+      - "5601:5601"
+
+  # === GPT4Free AI Service ===
+  g4f-service:
+    image: hlohaus789/g4f:latest
+    networks:
+      - myesi-net
+    ports:
+      - "1337:1337"
+      - "8080:8080"
+    environment:
+      G4F_DISABLE_AUTH: "true"
+      G4F_API_PORT: 1337
+      G4F_GUI_PORT: 8080
+      G4F_MODEL: openai/gpt-4o-mini
+      G4F_PROVIDER: OpenaiChat
+      G4F_SKIP_PROVIDERS: "True"
+      G4F_API: "true"
+      HF_TOKEN: ${HF_TOKEN}
+      G4F_DEFAULT_MODEL: openai/gpt-4o-mini
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+    volumes:
+      - ./g4f_har_and_cookies:/app/har_and_cookies
+      - ./g4f_generated_media:/app/generated_media
