@@ -8,10 +8,12 @@ volumes:
   kafka-data:
   zookeeper-data:
   zookeeper-logs:
+  pgbackup:
 
 services:
   postgres:
     image: postgres:16
+    container_name: postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -21,6 +23,12 @@ services:
       - ./db:/docker-entrypoint-initdb.d
     networks:
       - myesi-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   #Backup for dev stage
   postgres-backup:
@@ -73,6 +81,7 @@ services:
 
   redis:
     image: redis:7
+    container_name: myesi-redis
     volumes:
       - redis-data:/data
     networks:
@@ -89,9 +98,11 @@ services:
 
       # TODO (prod): if enabling HTTPS with Let's Encrypt on the host, mount cert directory:
       # - /etc/letsencrypt:/etc/letsencrypt:ro
+    env_file:
+      - .env.prod
 
     ports:
-      - "80:80"
+      - "9090:80"
       # TODO (prod): open port 443 when TLS is enabled:
       # - "443:443"
 
@@ -100,6 +111,7 @@ services:
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.9.4
+    container_name: zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
@@ -112,6 +124,7 @@ services:
 
   kafka:
     image: confluentinc/cp-kafka:7.9.4
+    container_name: kafka
     depends_on:
       - zookeeper
     environment:
@@ -128,6 +141,7 @@ services:
   # === API GATEWAY ===
   api-gateway:
     image: dquang0504/myesi-api-gateway:latest
+    container_name: api-gateway
     depends_on:
       - user-service
       - redis
@@ -147,6 +161,7 @@ services:
   # === USER SERVICE ===
   user-service:
     image: dquang0504/myesi-user-service:latest
+    container_name: user-service
     depends_on:
       - postgres
     environment:
@@ -163,10 +178,14 @@ services:
   # === SBOM SERVICE ===
   sbom-service:
     image: dquang0504/myesi-sbom-service-golang:latest
+    container_name: sbom-service
     depends_on:
-      - postgres
-      - redis
-      - kafka
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      kafka:
+        condition: service_started
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
       REDIS_URL: myesi-redis:6379
@@ -182,10 +201,14 @@ services:
   # === VULNERABILITY SERVICE ===
   vulnerability-service:
     image: dquang0504/myesi-vuln-service-golang:latest
+    container_name: vulnerability-service
     depends_on:
-      - postgres
-      - kafka
-      - redis
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      redis:
+        condition: service_started
     environment:
       REDIS_URL: myesi-redis:6379
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
@@ -209,6 +232,7 @@ services:
   # === RISK SERVICE ===
   risk-service:
     image: dquang0504/myesi-risk-service:latest
+    container_name: risk-service
     depends_on:
       - postgres
       - kafka
@@ -226,10 +250,11 @@ services:
   # === BILLING SERVICE ===
   billing-service:
     image: dquang0504/myesi-billing-service:latest
+    container_name: billing-service
     depends_on:
       - postgres
     env_file:
-      - ./myesi-billing-service/.env.prod   # tách env riêng cho billing
+      - .env.prod
     networks:
       - myesi-net
     ports:
@@ -238,10 +263,11 @@ services:
   # === FRONTEND ===
   myesi-frontend:
     image: dquang0504/myesi-frontend:latest
+    container_name: myesi-frontend
     depends_on:
       - api-gateway
     environment:
-      VITE_API_BASE_URL: http://api-gateway:8000   # frontend gọi qua gateway
+      VITE_API_BASE_URL: http://localhost:8000
     networks:
       - myesi-net
     ports:
@@ -250,6 +276,7 @@ services:
   # === ELASTICSEARCH + KIBANA ===
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    container_name: elasticsearch
     environment:
       discovery.type: single-node
       xpack.security.enabled: "false"
@@ -269,6 +296,7 @@ services:
 
   kibana:
     image: docker.elastic.co/kibana/kibana:8.15.3
+    container_name: kibana
     depends_on:
       - elasticsearch
     environment:
@@ -282,6 +310,7 @@ services:
   # === GPT4Free AI Service ===
   g4f-service:
     image: hlohaus789/g4f:latest
+    container_name: g4f-service
     networks:
       - myesi-net
     ports:

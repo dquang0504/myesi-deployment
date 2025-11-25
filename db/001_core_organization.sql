@@ -73,7 +73,7 @@ CREATE INDEX IF NOT EXISTS ix_users_email ON users(email);
 -- 5. Add FK subscriptions.user_id → users.id
 -- ============================================================
 ALTER TABLE subscriptions
-    ADD CONSTRAINT IF NOT EXISTS fk_subscriptions_user
+    ADD CONSTRAINT fk_subscriptions_user
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
 
 -- ============================================================
