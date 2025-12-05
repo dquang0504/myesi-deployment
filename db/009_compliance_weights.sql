@@ -60,3 +60,17 @@ INSERT INTO compliance_weights (standard, scope_key, title, category, weight) VA
 ('OWASP','A09','Security Logging and Monitoring Failures','Application',0.10),
 ('OWASP','A10','Server-Side Request Forgery','Application',0.10);
 
+-- === Code Findings Categories as controls ===
+INSERT INTO compliance_weights (standard, scope_key, title, category, weight, applicable) VALUES
+('ISO_27001:2022','CF_CODE_SECURITY','Secure coding findings','Code Security',0.05,TRUE),
+('ISO_27001:2022','CF_SECRETS','Secret/credential exposure','Code Security',0.07,TRUE),
+('ISO_27001:2022','CF_DEPLOYMENT','Deployment/Docker hardening','DevOps Security',0.05,TRUE),
+('ISO_27001:2022','CF_INJECTION','Injection/taint issues','Application Security',0.06,TRUE),
+('NIST_SP_800_53','CF_CODE_SECURITY','Secure coding findings','Application Security',0.05,TRUE),
+('NIST_SP_800_53','CF_SECRETS','Secret/credential exposure','Application Security',0.07,TRUE),
+('NIST_SP_800_53','CF_DEPLOYMENT','Deployment/Docker hardening','System Security',0.05,TRUE),
+('NIST_SP_800_53','CF_INJECTION','Injection/taint issues','Application Security',0.06,TRUE),
+('OWASP','CF_CODE_SECURITY','Secure coding findings','Code Security',0.05,TRUE),
+('OWASP','CF_SECRETS','Secret/credential exposure','Code Security',0.07,TRUE),
+('OWASP','CF_DEPLOYMENT','Deployment/Docker hardening','DevOps Security',0.05,TRUE),
+('OWASP','CF_INJECTION','Injection/taint issues','Application Security',0.06,TRUE);

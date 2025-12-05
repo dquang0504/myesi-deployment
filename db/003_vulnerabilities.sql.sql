@@ -1,6 +1,7 @@
 CREATE TABLE IF NOT EXISTS vulnerabilities (
     id BIGSERIAL PRIMARY KEY,
     sbom_id UUID NOT NULL,
+    project_id INT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     project_name TEXT,
     component_name TEXT NOT NULL,
     component_version TEXT NOT NULL,
@@ -22,6 +23,7 @@ CREATE INDEX IF NOT EXISTS idx_vuln_sbom_component
 ON vulnerabilities(sbom_id, component_name, component_version);
 
 CREATE INDEX IF NOT EXISTS idx_vuln_sbom ON vulnerabilities(sbom_id);
+CREATE INDEX IF NOT EXISTS idx_vuln_project ON vulnerabilities(project_id);
 
 CREATE TABLE IF NOT EXISTS vulnerability_assignments (
     id BIGSERIAL PRIMARY KEY,
@@ -49,6 +51,7 @@ CREATE INDEX IF NOT EXISTS idx_vuln_assign_status
 
 CREATE TABLE code_findings (
     id SERIAL PRIMARY KEY,
+    project_id INT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     project_name TEXT NOT NULL,
     rule_id TEXT,
     rule_title TEXT,
@@ -60,12 +63,14 @@ CREATE TABLE code_findings (
     start_line INTEGER,
     end_line INTEGER,
     code_snippet TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
     recommendation TEXT,
     reference_links JSONB,
     ai_remediation JSONB, -- g4f output (markdown)
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX idx_code_findings_project ON code_findings(project_name);
+CREATE INDEX IF NOT EXISTS idx_cf_project ON code_findings(project_id);
 
 CREATE TABLE IF NOT EXISTS code_finding_assignments (
     id BIGSERIAL PRIMARY KEY,

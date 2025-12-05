@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS sboms (
     project_id INT REFERENCES projects(id) ON DELETE CASCADE,
     project_name VARCHAR(255) NOT NULL,
     manifest_name TEXT,
-    source VARCHAR(50) NOT NULL,                -- 'manual', 'github', 'api'
+    source VARCHAR(50) NOT NULL,                -- 'manual' | 'auto-code-scan'
     sbom JSONB NOT NULL,                        -- full CycloneDX/SPDX JSON
     summary JSONB,                              -- summarized analysis
     object_url VARCHAR(1024),                   -- storage location (S3, GCS, etc.)
