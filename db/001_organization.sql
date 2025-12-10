@@ -24,7 +24,7 @@ INSERT INTO subscription_plans
  sbom_limit, user_limit, project_scan_limit, scan_rate_limit, monthly_price_cents, annual_price_cents, currency)
 VALUES
 ('Free Trial', 'For new users — limited to 2 SBOMs and 2 team members, expires after 14 days',
- 'price_free_trial_monthly', 'price_free_trial_yearly', 'prod_free_trial', 2, 3, 2, 30, 0, 0, 'usd'),
+ 'price_free_trial_monthly', 'price_free_trial_yearly', 'prod_free_trial', 15, 6, 15, 30, 0, 0, 'usd'),
 ('Basic', 'For small teams — up to 10 SBOMs',
  'price_1SPis3Fd0pLm7dcHtqE6n9ff', 'price_1SPizzFd0pLm7dcHJw1yxo1q', 'prod_TMRlmkBALD3Oar', 10, 5, 10, 60, 1999, 19990, 'usd'),
 ('Professional', 'For growing orgs — up to 50 SBOMs',
@@ -34,9 +34,6 @@ VALUES
 ON CONFLICT (name) DO NOTHING;
 
 
--- ============================================================
--- 2. Subscriptions (không FK tới users để tránh vòng)
--- ============================================================
 CREATE TABLE IF NOT EXISTS subscriptions (
     id BIGSERIAL PRIMARY KEY,
     user_id INT, -- FK added later
@@ -56,19 +53,36 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 
 
 -- ============================================================
--- 3. Organizations
+-- 3. Owner Accounts
+-- ============================================================
+CREATE TABLE IF NOT EXISTS owner_accounts (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    hashed_password VARCHAR(255) NOT NULL,
+    role VARCHAR(50) DEFAULT 'owner' NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE,
+    two_factor_enabled BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    last_login TIMESTAMPTZ
+);
+
+
+-- ============================================================
+-- 4. Organizations
 -- ============================================================
 CREATE TABLE IF NOT EXISTS organizations (
     id SERIAL PRIMARY KEY,
     name VARCHAR(255) UNIQUE NOT NULL,
     subscription_id BIGINT REFERENCES subscriptions(id) ON DELETE SET NULL,
+    owner_id INT NOT NULL REFERENCES owner_accounts(id) ON DELETE RESTRICT,
     require_two_factor BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 
 -- ============================================================
--- 4. Users
+-- 5. Users
 -- ============================================================
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
@@ -113,7 +127,7 @@ CREATE TABLE IF NOT EXISTS user_two_factors (
 
 
 -- ============================================================
--- 5. Add FK subscriptions.user_id → users.id (sau khi bảng đã tồn tại)
+-- 6. Add FK subscriptions.user_id → users.id (sau khi bảng đã tồn tại)
 -- ============================================================
 ALTER TABLE subscriptions
 ADD CONSTRAINT fk_subscriptions_user
@@ -121,7 +135,7 @@ FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
 
 
 -- ============================================================
--- 6. Organization Members
+-- 7. Organization Members
 -- ============================================================
 CREATE TABLE IF NOT EXISTS organization_members (
     id SERIAL PRIMARY KEY,
@@ -134,7 +148,7 @@ CREATE TABLE IF NOT EXISTS organization_members (
 
 
 -- ============================================================
--- 7. User Integrations
+-- 8. User Integrations
 -- ============================================================
 CREATE TABLE IF NOT EXISTS user_integrations (
     id SERIAL PRIMARY KEY,
@@ -151,12 +165,38 @@ CREATE TABLE IF NOT EXISTS user_integrations (
 
 
 -- ============================================================
--- 8. Seed Data (ĐƠN GIẢN – KHÔNG dynamic ID)
+-- 9. Seed Data (ĐƠN GIẢN – KHÔNG dynamic ID)
 -- ============================================================
 
-INSERT INTO organizations (name)
-VALUES ('MyESI'), ('Acme Inc.')
-ON CONFLICT (name) DO NOTHING;
+INSERT INTO owner_accounts (
+    name,
+    email,
+    hashed_password,
+    role,
+    is_active,
+    two_factor_enabled
+)
+VALUES (
+    'Owner User',
+    'owner@myesi.local.dev',
+    '$2a$12$.Qo/RImHj2Ltgd.Ia5SWKuw91WluYoU5NVA.Gq1BZeu0z4FzYO6FS',
+    'owner',
+    TRUE,
+    FALSE
+)
+ON CONFLICT (email) DO NOTHING;
+
+INSERT INTO organizations (name, owner_id)
+SELECT seed.name, owner.id
+FROM (
+    SELECT 'MyESI' AS name
+    UNION ALL
+    SELECT 'Acme Inc.'
+) AS seed
+JOIN owner_accounts AS owner
+    ON owner.email = 'owner@myesi.local.dev'
+ON CONFLICT (name) DO UPDATE
+SET owner_id = EXCLUDED.owner_id;
 
 INSERT INTO users (
     name, email, hashed_password, role, is_active, organization_id, created_at, last_login
@@ -167,17 +207,8 @@ VALUES
  'developer', TRUE, 1, NOW(), NOW()),
 ('Admin User', 'admin@myesi.local.dev',
  '$2a$12$.Qo/RImHj2Ltgd.Ia5SWKuw91WluYoU5NVA.Gq1BZeu0z4FzYO6FS',
- 'admin', TRUE, 1, NOW(), NOW()),
-('Owner User', 'owner@myesi.local.dev',
- '$2a$12$.Qo/RImHj2Ltgd.Ia5SWKuw91WluYoU5NVA.Gq1BZeu0z4FzYO6FS',
- 'owner', TRUE, 1, NOW(), NOW())
+ 'admin', TRUE, 1, NOW(), NOW())
 ON CONFLICT (email) DO NOTHING;
-
-INSERT INTO organization_members (user_id, organization_id, role)
-SELECT id, 1, 'owner'
-FROM users
-WHERE email = 'owner@myesi.local.dev'
-ON CONFLICT (user_id, organization_id) DO NOTHING;
 
 INSERT INTO subscriptions (
     user_id, plan_id, stripe_customer_id, stripe_subscription_id, status,
@@ -198,8 +229,7 @@ WHERE name = 'MyESI'
 ON CONFLICT (organization_id) DO NOTHING;
 
 
--- ============================================================
--- 9. Trigger: Enforce User Limit
+-- 10. Trigger: Enforce User Limit
 -- ============================================================
 CREATE OR REPLACE FUNCTION enforce_user_limit() RETURNS trigger AS $$
 DECLARE
